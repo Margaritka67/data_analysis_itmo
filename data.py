@@ -255,5 +255,5 @@ quantile_95 = median_unique_vendors['median_unique_vendors'].quantile(0.95)
 # 6. Посчитаем, сколько клиентов имеют медиану строго выше 95-го перцентиля
 count_clients = (median_unique_vendors['median_unique_vendors'] > quantile_95).sum()
 
-print("\n=== Клиентов имеют медиану строго выше 95-го перцентиля: ===")
+print("\n=== Клиентов имеют медиану строго выше 95-го перцентиля (демонстрируют потенциально опасное поведение): ===")
 print(count_clients)
