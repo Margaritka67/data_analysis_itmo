@@ -3,7 +3,7 @@ import pandas as pd
 # -------------------------------------------------
 # Читаем файл
 # -------------------------------------------------
-# Путь к файлу – замените на реальный путь к вашему parquet‑файлу
+# Путь к файлу
 parquet_path = "transaction_fraud_data.parquet"
 
 # read_parquet автоматически определит типы колонок, в том числе struct‑поле
@@ -64,7 +64,7 @@ df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
 # -------------------------------------------------
 # Округляем до начала часа (floor)
 # -------------------------------------------------
-df["hour_ts"] = df["timestamp"].dt.floor('H')   # например 2023‑03‑12 14:00:00+00:00
+df["hour_ts"] = df["timestamp"].dt.floor('h')   # например 2023‑03‑12 14:00:00+00:00
 
 # -------------------------------------------------
 # Считаем количество транзакций в каждой паре (customer, hour)
@@ -84,12 +84,10 @@ unique_customer_hours = len(customer_hour_counts)
 
 avg_tx_per_customer_hour = total_transactions / unique_customer_hours
 
-print("\n=== Результат (in‑memory) ===")
+print("\n=== Результат ===")
 print(f"Всего транзакций                     : {total_transactions:,}")
 print(f"Уникальных (customer, hour) пар       : {unique_customer_hours:,}")
 print(f"Среднее число транзакций за час: {avg_tx_per_customer_hour:.3f}")
-
-
 
 
 
@@ -121,7 +119,6 @@ print("\n=== Мошенничество у продавцов с высоким 
 print(f"Всего транзакций (high‑risk)            : {total_high_risk:,}")
 print(f"Мошеннических транзакций (high‑risk)    : {fraud_high_risk:,}")
 print(f"Доля мошенничества                      : {fraud_ratio_high_risk:.4%}")
-
 
 
 
@@ -159,7 +156,7 @@ print(f"Город               : {city_with_max_avg!r}")
 print(f"Средняя сумма (USD) : {max_average_amount:,.2f}")
 
 # Если хотите увидеть топ‑5 городов, добавьте:
-print("\nТоп‑5 городов по средней сумме:")
+print("\n=== Топ‑5 городов по средней сумме: === ")
 print(city_avg.sort_values("avg_amount", ascending=False).head(5)
       .rename(columns={"avg_amount":"avg_amount_USD"})
       .to_string(index=False))
@@ -182,17 +179,15 @@ else:
     # Сортируем по убыванию и берём топ-3
     top_3_cities = avg_amount_by_city.sort_values(by='amount', ascending=False).head(3)
 
-    print("Топ-3 города по среднему чеку в fast_food:")
+    print("\n=== Топ-3 города по среднему чеку в fast_food: ===")
     for _, row in top_3_cities.iterrows():
         print(f"{row['city']}: {row['amount']:.2f} {df_fast_food['currency'].iloc[0] if not df_fast_food.empty else ''}")
 
 
+#__________________________________________________________________________________________
 
-
-
-#
 # 1. Загрузка транзакций
-df_tx = pd.read_parquet('transaction_fraud_data.parquet')
+df_tx = df
 
 # 2. Оставить только немошеннические
 df_tx = df_tx[df_tx['is_fraud'] == False].copy()
@@ -228,65 +223,37 @@ df_merged['amount_usd'] = df_merged['amount'] / df_merged['exchange_rate']
 # 9. Посчитать среднее
 avg_amount_usd = df_merged['amount_usd'].mean()
 
-print(f"Средняя сумма немошеннической операции в USD: {avg_amount_usd:.2f} USD")
+print(f"\n=== Средняя сумма немошеннической операции в USD: === \n {avg_amount_usd:.2f} USD")
 
 
 
+#__________________________________________________________________________
 
+# 1. Создадим колонку с округлением времени до часа
+df['hour'] = df['timestamp'].dt.floor('h')
 
-# 1. Загрузка транзакций
-df_tx = pd.read_parquet('transaction_fraud_data.parquet')
+# 2. Для каждой пары (customer_id, hour) посчитаем число уникальных продавцов
+unique_vendors_per_hour = (
+    df.groupby(['customer_id', 'hour'])['vendor']
+    .nunique()
+    .reset_index(name='unique_vendors_count')
+)
 
-# 2. Извлечение даты из timestamp
-df_tx['date'] = pd.to_datetime(df_tx['timestamp']).dt.date
+# 3. Присоединим это значение обратно к каждой транзакции по customer_id и hour
+df = df.merge(unique_vendors_per_hour, on=['customer_id', 'hour'], how='left')
 
-# 3. Загрузка курсов
-df_fx = pd.read_parquet('historical_currency_exchange.parquet')
-df_fx['date'] = pd.to_datetime(df_fx['date']).dt.date
+# 4. Для каждого клиента вычислим медиану показателя unique_vendors_count
+median_unique_vendors = (
+    df.groupby('customer_id')['unique_vendors_count']
+    .median()
+    .reset_index(name='median_unique_vendors')
+)
 
-# 4. Перевод курсов в "длинный" формат
-df_fx_long = df_fx.melt(id_vars=['date'], var_name='currency', value_name='exchange_rate')
-df_fx_long = df_fx_long.dropna(subset=['exchange_rate'])
+# 5. Найдём 95-й перцентиль медианных значений
+quantile_95 = median_unique_vendors['median_unique_vendors'].quantile(0.95)
 
-# 5. Объединение транзакций с курсами
-df_merged = df_tx.merge(df_fx_long, on=['date', 'currency'], how='inner')
+# 6. Посчитаем, сколько клиентов имеют медиану строго выше 95-го перцентиля
+count_clients = (median_unique_vendors['median_unique_vendors'] > quantile_95).sum()
 
-# Проверка: если есть пропущенные курсы
-if len(df_merged) < len(df_tx):
-    missing = df_tx.merge(df_fx_long, on=['date', 'currency'], how='left', indicator=True)
-    missing = missing[missing['_merge'] == 'left_only']
-    print(f"⚠️ Не найдены курсы для {len(missing)} транзакций")
-    print("Валюты без курса:", missing['currency'].unique())
-    print("Даты без курса:", missing['date'].unique())
-
-# 6. Перевод суммы в USD: amount / exchange_rate
-# exchange_rate — это сколько единиц валюты за 1 USD → 1 EUR = 0.93 → 1 EUR = 1 / 0.93 USD
-df_merged['amount_usd'] = df_merged['amount'] / df_merged['exchange_rate']
-
-# 7. Разделение на мошеннические и честные
-fraud = df_merged[df_merged['is_fraud'] == True]
-not_fraud = df_merged[df_merged['is_fraud'] == False]
-
-# 8. Вычисление метрик
-results = {
-    "non_fraud": {
-        "mean_usd": not_fraud['amount_usd'].mean(),
-        "std_usd": not_fraud['amount_usd'].std()
-    },
-    "fraud": {
-        "mean_usd": fraud['amount_usd'].mean() if len(fraud) > 0 else 0,
-        "std_usd": fraud['amount_usd'].std() if len(fraud) > 0 else 0
-    }
-}
-
-# 9. Вывод результатов
-print("📊 Статистика по операциям в USD:")
-print("-" * 50)
-
-print(f"Немошеннические операции:")
-print(f"  • Среднее:      {results['non_fraud']['mean_usd']:8.2f} USD")
-print(f"  • Стандартное отклонение: {results['non_fraud']['std_usd']:8.2f} USD")
-
-print(f"Мошеннические операции:")
-print(f"  • Среднее:      {results['fraud']['mean_usd']:8.2f} USD")
-print(f"  • Стандартное отклонение: {results['fraud']['std_usd']:8.2f} USD")
+print("\n=== Клиентов имеют медиану строго выше 95-го перцентиля: ===")
+print(count_clients)
