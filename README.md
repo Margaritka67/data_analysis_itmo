@@ -1,4 +1,4 @@
-# data_analysis_itmo
+# data_analysis
  
 ## Описание данных
 
